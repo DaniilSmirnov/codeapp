@@ -290,10 +290,14 @@ struct SourceControlContainer: View {
             title: "source_control.pulling_from_remote"
         ) {
             do {
+                guard !App.textEditors.contains(where: { !$0.isSaved }) else {
+                    throw NSError(descriptionKey: "Save or close unsaved editors before pull.")
+                }
                 try await serviceProvider.pull(branch: branch, remote: remote)
                 App.notificationManager.showInformationMessage("source_control.pull_succeeded")
                 App.updateGitRepositoryStatus()
             } catch {
+                App.updateGitRepositoryStatus()
                 App.notificationManager.showErrorMessage(error.localizedDescription)
             }
 
@@ -314,6 +318,11 @@ struct SourceControlContainer: View {
                     onConfirm: { branchName in
                         Task {
                             do {
+                                guard !App.textEditors.contains(where: { !$0.isSaved }) else {
+                                    throw NSError(
+                                        descriptionKey: "Save or close unsaved editors before checkout."
+                                    )
+                                }
                                 let head = try await serviceProvider.head()
                                 let commit = try await serviceProvider.lookupCommit(oid: head.oid)
                                 let newBranch = try await serviceProvider.createBranch(

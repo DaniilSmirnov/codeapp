@@ -18,6 +18,9 @@ struct CheckoutMenu: View {
             throw SourceControlError.gitServiceProviderUnavailable
         }
         do {
+            guard !App.textEditors.contains(where: { !$0.isSaved }) else {
+                throw NSError(descriptionKey: "Save or close unsaved editors before checkout.")
+            }
             try await gitServiceProvider.checkout(reference: destination.reference)
             App.updateGitRepositoryStatus()
             App.notificationManager.showInformationMessage("Checkout succeeded")
@@ -46,27 +49,8 @@ struct CheckoutMenu: View {
                             iconSystemName: iconNameForReferenceType($0.reference))
                     },
                     onSelect: { destination in
-                        if !App.gitTracks.isEmpty {
-
-                            App.alertManager.showAlert(
-                                title: "Git checkout: Uncommitted Changes",
-                                message:
-                                    "Uncommitted changes will be lost. Do you wish to proceed?",
-                                content: AnyView(
-                                    Group {
-                                        Button("Checkout", role: .destructive) {
-                                            Task {
-                                                try await checkout(destination: destination)
-                                            }
-                                        }
-                                        Button("common.cancel", role: .cancel) {}
-                                    }
-                                )
-                            )
-                        } else {
-                            Task {
-                                try await checkout(destination: destination)
-                            }
+                        Task {
+                            try await checkout(destination: destination)
                         }
                     }, title: App.branch, iconName: "arrow.triangle.branch",
                     menuTitle: "source_control.checkout.select_branch_or_tag"

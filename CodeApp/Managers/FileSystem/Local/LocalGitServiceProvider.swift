@@ -116,7 +116,7 @@ class LocalGitServiceProvider: GitServiceProvider {
     }
 
     /// Count the number of unique commits between HEAD and the specified remote
-    /// If remote is nil, origin will be used
+    /// If remote is nil, the configured upstream will be used
     func aheadBehind(remote: Remote?) async throws -> (Int, Int) {
         return try await WorkerQueueTask {
             let repository = try self.checkedRepository()
@@ -126,9 +126,12 @@ class LocalGitServiceProvider: GitServiceProvider {
             else {
                 throw NSError(descriptionKey: "Git is in detached mode")
             }
-            let remoteBranch = try repository.remoteBranch(
-                named: "\(remote?.name ?? "origin")/\(branchName)"
-            ).get()
+            let remoteBranch: Branch
+            if let remote {
+                remoteBranch = try repository.remoteBranch(named: "\(remote.name)/\(branchName)").get()
+            } else {
+                remoteBranch = try repository.upstream(of: branch)
+            }
             return try repository.aheadBehind(local: ref.oid, upstream: remoteBranch.oid).get()
         }
     }
@@ -196,7 +199,11 @@ class LocalGitServiceProvider: GitServiceProvider {
         try await WorkerQueueTask {
             let repository = try self.checkedRepository()
             let signature = try self.checkedSignature()
-            let isMerging = repository.repositoryState().contains(.merge)
+            let state = repository.repositoryState()
+            guard state == .none || state == .merge else {
+                throw NSError(descriptionKey: "Finish the current Git operation before committing.")
+            }
+            let isMerging = state == .merge
             if isMerging {
                 let head = try repository.HEAD().get()
                 let oids = try [head.oid] + repository.enumerateMergeHeadEntries()
@@ -207,6 +214,7 @@ class LocalGitServiceProvider: GitServiceProvider {
                 _ = try repository.commit(
                     tree: treeOid, parents: parents, message: message, signature: signature
                 ).get()
+                try repository.cleanUpState()
             } else {
                 _ = try repository.commit(message: message, signature: signature).get()
             }
@@ -376,6 +384,7 @@ class LocalGitServiceProvider: GitServiceProvider {
             let signature = try self.checkedSignature()
             try repository.pull(
                 branch: branch, from: from, credentials: credentials, signature: signature)
+            self.contentCache.removeAllObjects()
         }
     }
 
