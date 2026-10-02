@@ -8,7 +8,7 @@
 import Clibgit2
 import Foundation
 
-public struct RepositoryState: OptionSet {
+public struct RepositoryState: RawRepresentable, Equatable {
     public let rawValue: UInt32
     
     public init(rawValue: UInt32) {

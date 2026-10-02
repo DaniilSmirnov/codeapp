@@ -322,6 +322,11 @@ public final class Repository {
     ///
     /// Returns nothing on success
     public func pull(branch: Branch, from remote: Remote, credentials: Credentials, signature: Signature) throws {
+        try requireCleanWorktree()
+        guard branch.isRemote, branch.longName.hasPrefix("refs/remotes/\(remote.name)/") else {
+            throw NSError(domain: libGit2ErrorDomain, code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "Select a branch from the chosen remote."])
+        }
 		let result = fetch(remote, credentials: credentials)
 		switch result {
 		case .success:
@@ -330,27 +335,11 @@ public final class Repository {
             throw error
 		}
 
-        var trackingBranch: Branch
-        
-		if branch.isLocal {
-            // TODO: Handle local branch
-            throw NSError(
-                domain: libGit2ErrorDomain,
-                code: 1,
-                userInfo: [
-                    NSLocalizedDescriptionKey: "Local branch is unsupported yet.",
-                ]
-            )
-        }else{
-            let refResult = self.reference(named: branch.longName)
-            switch refResult {
-            case let .success(resultBranch):
-                trackingBranch = resultBranch as! Branch
-            case let .failure(error):
-                throw error
-            }
+        guard let trackingBranch = try reference(named: branch.longName).get() as? Branch else {
+            throw NSError(domain: libGit2ErrorDomain, code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "The selected remote branch no longer exists."])
         }
-        
+
         try self.mergeBranchIntoCurrentBranch(branch: trackingBranch, signature: signature)
 	}
     
@@ -386,6 +375,7 @@ public final class Repository {
         var annotatedCommit: OpaquePointer? = try unsafeAnnotatedCommit(oid: fromBranch.commit.oid)
         
         let analysis = UnsafeMutablePointer<git_merge_analysis_t>.allocate(capacity: 1)
+        defer { analysis.deallocate() }
         var preference = git_merge_preference_t(GIT_MERGE_PREFERENCE_NONE.rawValue)
         
         let mergeAnalysisResult = git_merge_analysis(
@@ -399,7 +389,6 @@ public final class Repository {
         git_annotated_commit_free(annotatedCommit)
         
         guard mergeAnalysisResult == GIT_OK.rawValue else {
-            analysis.deallocate()
             throw NSError(gitError: mergeAnalysisResult, pointOfFailure: "git_merge_preference_t")
         }
         
@@ -416,6 +405,7 @@ public final class Repository {
             throw NSError(gitError: gitError, pointOfFailure: "git_reference_lookup")
         }
         
+        defer { git_reference_free(refPointer) }
         var newReferencePointer: OpaquePointer? = nil
         var newTargetOID = newTarget.oid
         
@@ -428,105 +418,86 @@ public final class Repository {
         guard setReferenceError == GIT_OK.rawValue else {
             throw NSError(gitError: setReferenceError, pointOfFailure: "git_reference_set_target")
         }
+        defer { git_reference_free(newReferencePointer) }
         return referenceWithLibGit2Reference(newReferencePointer!)
     }
     
-    private func mergeBranchIntoCurrentBranch(branch: Branch, signature: Signature) throws {
-        let localBranch = try self.currentBranch()
-        
-        if localBranch.commit.oid.description == branch.commit.oid.description {
-            return
+    /// Refuse integration while local files or another Git operation need attention.
+    public func requireCleanWorktree() throws {
+        guard repositoryState() == .none else {
+            throw NSError(domain: libGit2ErrorDomain, code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "Finish the current Git operation first."])
         }
-        
-        let analysis = try analyzeMerge(fromBranch: branch)
-        
-        if (analysis.contains(.upToDate)){
-            // Do nothing
-            return
-        }else if (analysis.contains(.fastForward) || analysis.contains(.unborn)){
-            // Fast-forward branch
-            let newReference = try updateReferenceTarget(
-                reference: localBranch,
-                newTarget: branch.commit.oid,
-                message: "merge \(branch.name): Fast-forward"
-            )
-            
-            try self.checkout(newReference, strategy: .Force).get()
-        }else if analysis.contains(.normal) {
-            // Do normal merge
-            let localTree = try safeTreeForCommitId(localBranch.commit.oid).get()
-            let remoteTree = try safeTreeForCommitId(branch.commit.oid).get()
-            
-            // TODO: Find common ancestor
-            let ancestorTree: Tree? = nil
-            
-            // Merge
-            let index = try mergeTree(tree: localTree, otherTree: remoteTree, ancestor: ancestorTree)
-            defer { git_index_free(index) }
-            
-            // Check for conflict
-            if (git_index_has_conflicts(index) != 0) {
-                var mergeOptions = {
-                    let pointer = UnsafeMutablePointer<git_merge_options>.allocate(capacity: 1)
-                    git_merge_options_init(pointer, UInt32(GIT_MERGE_OPTIONS_VERSION))
-                    return pointer.move()
-                }()
-                
-                var checkoutOptions = {
-                    let pointer = UnsafeMutablePointer<git_checkout_options>.allocate(capacity: 1)
-                    git_checkout_options_init(pointer, UInt32(GIT_CHECKOUT_OPTIONS_VERSION))
-                    return pointer.move()
-                }()
-                
-                let strategy: CheckoutStrategy = [CheckoutStrategy.Safe, CheckoutStrategy.AllowConflicts]
-                checkoutOptions.checkout_strategy = strategy.gitCheckoutStrategy.rawValue
-                
-                var annotatedCommit: OpaquePointer? = try unsafeAnnotatedCommit(oid: branch.commit.oid)
-                
-                git_merge(self.pointer, &annotatedCommit, 1, &mergeOptions, &checkoutOptions)
-                
-                git_annotated_commit_free(annotatedCommit)
-                
-                throw NSError(
-                    domain: libGit2ErrorDomain,
-                    code: 1,
-                    userInfo: [
-                        NSLocalizedDescriptionKey: "Conflicts with target branch are found.",
-                    ]
-                )
-            }
-            
-            let newTree = try writeUnsafeTree(tree: index)
-            
-            // Create merge commit
-            let parents = [
-                try commit(localBranch.commit.oid).get(),
-                try commit(branch.commit.oid).get()
-            ]
-            
-            // FIXME: This is stepping on the local tree
-            _ = try self.commit(
-                tree: newTree.oid,
-                parents: parents,
-                message: "Merge branch \(localBranch.name)",
-                signature: signature
-            ).get()
-            
-            let updatedBranch = try self.currentBranch()
-            
-            try self.checkout(updatedBranch, strategy: .Force).get()
-            
-        }else {
-            throw NSError(
-                domain: libGit2ErrorDomain,
-                code: 1,
-                userInfo: [
-                    NSLocalizedDescriptionKey: "Failed to merge branch",
-                ]
-            )
+        let entries = try status(options: [.includeUntracked, .recurseUntrackedDirs]).get()
+        guard entries.isEmpty else {
+            throw NSError(domain: libGit2ErrorDomain, code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "Commit or stash your changes, including untracked files, before checkout or pull."])
         }
     }
-	
+
+    public func upstream(of branch: Branch) throws -> Branch {
+        var local: OpaquePointer?
+        let lookup = git_reference_lookup(&local, pointer, branch.longName)
+        guard lookup == GIT_OK.rawValue, let local else {
+            throw NSError(gitError: lookup, pointOfFailure: "git_reference_lookup")
+        }
+        defer { git_reference_free(local) }
+        var upstream: OpaquePointer?
+        let result = git_branch_upstream(&upstream, local)
+        guard result == GIT_OK.rawValue, let upstream else {
+            throw NSError(gitError: result, pointOfFailure: "git_branch_upstream")
+        }
+        defer { git_reference_free(upstream) }
+        guard let branch = referenceWithLibGit2Reference(upstream) as? Branch else {
+            throw NSError(domain: libGit2ErrorDomain, code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "No upstream branch is configured."])
+        }
+        return branch
+    }
+
+    public func mergeBranchIntoCurrentBranch(branch: Branch, signature: Signature) throws {
+        try requireCleanWorktree()
+        let localBranch = try currentBranch()
+        let analysis = try analyzeMerge(fromBranch: branch)
+        if analysis.contains(.upToDate) { return }
+        if analysis.contains(.fastForward) {
+            // Checkout must succeed before the branch reference moves.
+            try checkoutTree(branch.oid, strategy: .Safe).get()
+            _ = try updateReferenceTarget(reference: localBranch, newTarget: branch.oid,
+                message: "merge \(branch.name): Fast-forward")
+            return
+        }
+        guard analysis.contains(.normal) else {
+            throw NSError(domain: libGit2ErrorDomain, code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "Cannot merge this repository state."])
+        }
+        // libgit2 resolves the common ancestor(s) and installs a real merge index
+        // and MERGE_HEAD. Never manufacture a two-way merge with a nil ancestor.
+        var mergeOptions = git_merge_options()
+        let mergeInit = git_merge_options_init(&mergeOptions, UInt32(GIT_MERGE_OPTIONS_VERSION))
+        guard mergeInit == GIT_OK.rawValue else {
+            throw NSError(gitError: mergeInit, pointOfFailure: "git_merge_options_init")
+        }
+        var options = checkoutOptions(strategy: [.Safe, .AllowConflicts, .DontOverwriteIgnored], progress: nil)
+        var annotated: OpaquePointer? = try unsafeAnnotatedCommit(oid: branch.oid)
+        defer { git_annotated_commit_free(annotated) }
+        let result = git_merge(pointer, &annotated, 1, &mergeOptions, &options)
+        guard result == GIT_OK.rawValue else {
+            throw NSError(gitError: result, pointOfFailure: "git_merge")
+        }
+        let index = try unsafeIndex().get()
+        defer { git_index_free(index) }
+        guard git_index_has_conflicts(index) == 0 else {
+            throw NSError(domain: libGit2ErrorDomain, code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "Merge conflicts require resolution. Your branch has not moved."])
+        }
+        let tree = try writeIndexAsTree()
+        let parents = [try commit(localBranch.oid).get(), try commit(branch.oid).get()]
+        _ = try commit(tree: tree, parents: parents,
+            message: "Merge branch \(branch.name)", signature: signature).get()
+        try cleanUpState()
+    }
+
 	// MARK: - Creating Repositories
 
 	/// Create a new repository at the given URL.
@@ -1053,7 +1024,7 @@ public final class Repository {
 	/// :returns: Returns a result with void or the error that occurred.
 	public func checkout(_ oid: OID, strategy: CheckoutStrategy,
 						 progress: CheckoutProgressBlock? = nil) -> Result<(), NSError> {
-		return setHEAD(oid).flatMap { self.checkout(strategy: strategy, progress: progress) }
+		return checkoutTree(oid, strategy: strategy, progress: progress).flatMap { self.setHEAD(oid) }
 	}
 
 	/// Check out the given reference.
@@ -1064,8 +1035,27 @@ public final class Repository {
 	/// :returns: Returns a result with void or the error that occurred.
 	public func checkout(_ reference: ReferenceType, strategy: CheckoutStrategy,
 						 progress: CheckoutProgressBlock? = nil) -> Result<(), NSError> {
-		return setHEAD(reference).flatMap { self.checkout(strategy: strategy, progress: progress) }
+		// Branch/tag values are snapshots; resolve again before using their OID.
+        return self.reference(named: reference.longName).flatMap { currentReference in
+            self.checkoutTree(currentReference.oid, strategy: strategy, progress: progress)
+                .flatMap { self.setHEAD(currentReference) }
+        }
 	}
+
+    private func checkoutTree(_ oid: OID, strategy: CheckoutStrategy,
+        progress: CheckoutProgressBlock? = nil) -> Result<(), NSError> {
+        do {
+            if strategy.contains(.Safe) { try requireCleanWorktree() }
+            return withGitObject(oid, type: GIT_OBJECT_COMMIT) { object -> Result<(), NSError> in
+                var options = checkoutOptions(strategy: strategy.union(.DontOverwriteIgnored), progress: progress)
+                let result = git_checkout_tree(pointer, object, &options)
+                guard result == GIT_OK.rawValue else {
+                    return .failure(NSError(gitError: result, pointOfFailure: "git_checkout_tree"))
+                }
+                return .success(())
+            }
+        } catch let error as NSError { return .failure(error) }
+    }
 
 	/// Load all commits in the specified branch in topological & time order descending
 	///
@@ -1254,7 +1244,8 @@ public final class Repository {
         return RepositoryState(rawValue: UInt32(git_repository_state(self.pointer)))
     }
     
-    private func cleanUpState() throws {
+    /// Clear completed merge metadata after a successful merge commit.
+    public func cleanUpState() throws {
         let gitResult = git_repository_state_cleanup(self.pointer)
         guard gitResult == GIT_OK.rawValue else {
             throw NSError(gitError: gitResult, pointOfFailure: "git_repository_state_cleanup")
@@ -1453,55 +1444,6 @@ public final class Repository {
 		return Result<OpaquePointer, NSError>.success(tree!)
 	}
     
-    /// Write the index to the given repository as a tree.
-    /// Will fail if the receiver's index has conflicts.
-    ///
-    /// repository - The repository to write the tree to. Can't be nil.
-    /// error      - The error if one occurred.
-    ///
-    /// Returns a new GTTree or nil if an error occurred.
-    private func writeUnsafeTree(tree: OpaquePointer) throws -> Tree {
-        var oid = git_oid()
-        let gitStatus = git_index_write_tree_to(&oid, tree, self.pointer)
-        guard gitStatus == GIT_OK.rawValue else {
-            throw NSError(gitError: gitStatus, pointOfFailure: "git_index_write_tree_to")
-        }
-
-        return try self.tree(OID(oid)).get()
-    }
-    
-    /// Merges the given tree into the receiver in memory and produces the result as
-    /// an index.
-    ///
-    /// otherTree    - The tree with which the receiver should be merged. Cannot be
-    ///                nil.
-    /// ancestorTree - The common ancestor of the two trees, or nil if none.
-    /// error        - The error if one occurred.
-    ///
-    /// Returns an index which represents the result of the merge, or nil if an error
-    /// occurred.
-    ///
-    private func mergeTree(tree: Tree, otherTree: Tree, ancestor: Tree?) throws -> OpaquePointer {
-        var index: OpaquePointer? = nil
-        
-        return try withGitObjects([tree.oid, otherTree.oid],
-            type: GIT_OBJECT_TREE){ objects in
-                let ancestorTreePointer = (ancestor == nil ? nil : try unsafeTreeForCommitId(ancestor!.oid).get())
-                
-                let gitResult = git_merge_trees (
-                    &index,
-                    self.pointer,
-                    ancestorTreePointer,
-                    objects[0],
-                    objects[1],
-                    nil
-                )
-                guard gitResult == GIT_OK.rawValue, let index else {
-                    throw NSError(gitError: gitResult, pointOfFailure: "git_merge_trees")
-                }
-                return index
-            }
-    }
 
 	// MARK: - Status
 
