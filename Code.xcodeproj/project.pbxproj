@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		D1A6F0000000000000000001 /* RepositorySafetyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1A6F0000000000000000002 /* RepositorySafetyTests.swift */; };
 		940C68252C646E0400089EA3 /* System.swift in Sources */ = {isa = PBXBuildFile; fileRef = 940C68242C646E0400089EA3 /* System.swift */; };
 		940C68262C64704C00089EA3 /* String+toCString.swift in Sources */ = {isa = PBXBuildFile; fileRef = 949B3CC425DEA89A00BC83B5 /* String+toCString.swift */; };
 		940C68272C65D36700089EA3 /* commandDictionary.plist in Resources */ = {isa = PBXBuildFile; fileRef = 948D11FF2583F20C008F877A /* commandDictionary.plist */; };
@@ -1406,6 +1407,7 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		D1A6F0000000000000000002 /* RepositorySafetyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RepositorySafetyTests.swift; sourceTree = "<group>"; };
 		4F30816829662CBF002708FD /* ja */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = ja; path = ja.lproj/Localizable.strings; sourceTree = "<group>"; };
 		4F30816929662D58002708FD /* ja */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = ja; path = ja.lproj/InfoPlist.strings; sourceTree = "<group>"; };
 		73F80B0F2850F7E5000EF3FC /* ko */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = ko; path = ko.lproj/Localizable.strings; sourceTree = "<group>"; };
@@ -3234,6 +3236,7 @@
 			isa = PBXGroup;
 			children = (
 				9FE3E294298A14BC00F63DD0 /* CodeUITests.swift */,
+				D1A6F0000000000000000002 /* RepositorySafetyTests.swift */,
 			);
 			path = CodeUITests;
 			sourceTree = "<group>";
@@ -3977,6 +3980,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				9FE3E295298A14BC00F63DD0 /* CodeUITests.swift in Sources */,
+				D1A6F0000000000000000001 /* RepositorySafetyTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
